@@ -5,6 +5,7 @@
 ## 功能
 
 - 从起始页 `https://www.tripadvisor.cn/Attractions-g294211-Activities-China.html` 开始抓取
+- 支持指定起始页码，从任意页开始抓取后续数据
 - 通过底部分页控件进入下一页
 - 默认抓取 10 页（可配置）
 - 导出 `编号`、`景点名称` 到 `attractionsForAgent.xlsx`
@@ -32,6 +33,7 @@ python3 scrape_tripadvisor_attractions.py
 
 ```bash
 python3 scrape_tripadvisor_attractions.py \
+  --start-page 5 \
   --pages 10 \
   --output attractionsForAgent.xlsx \
   --video attractionsForAgent.webm
@@ -40,6 +42,7 @@ python3 scrape_tripadvisor_attractions.py \
 可选参数：
 
 - `--url`: 自定义起始页面
+- `--start-page`: 起始页码（默认 1），例如 5 表示从第 5 页开始抓取
 - `--pages`: 抓取页数
 - `--output`: Excel 输出路径
 - `--video`: 录屏输出路径

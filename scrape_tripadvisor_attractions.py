@@ -28,6 +28,12 @@ def parse_arguments() -> argparse.Namespace:
         "--pages", type=int, default=10, help="抓取页数（默认 10）。"
     )
     parser.add_argument(
+        "--start-page",
+        type=int,
+        default=1,
+        help="从第几页开始抓取（页码从 1 开始，默认 1）。",
+    )
+    parser.add_argument(
         "--output",
         default="attractionsForAgent.xlsx",
         help="Excel 输出文件路径。",
@@ -113,6 +119,50 @@ def goto_next_page(page: Page, previous_first_rank: int) -> bool:
     return True
 
 
+def get_current_page_number(page: Page) -> int:
+    current_page = page.evaluate(
+        """
+        () => {
+          const currentPageAnchor = document.querySelector(
+            "a[aria-label*='is your current page']"
+          );
+          if (!currentPageAnchor) return 1;
+
+          const ariaLabel = currentPageAnchor.getAttribute("aria-label") || "";
+          const ariaMatch = ariaLabel.match(/Page\\s+(\\d+)\\s+is your current page/i);
+          if (ariaMatch) return Number(ariaMatch[1]);
+
+          const text = (currentPageAnchor.textContent || "").trim();
+          if (/^\\d+$/.test(text)) return Number(text);
+          return 1;
+        }
+        """
+    )
+    return int(current_page)
+
+
+def jump_to_start_page(page: Page, start_page: int) -> None:
+    if start_page <= 1:
+        return
+
+    current_page = get_current_page_number(page)
+    if current_page > start_page:
+        raise RuntimeError(
+            f"当前已在第 {current_page} 页，无法回退到第 {start_page} 页。"
+        )
+
+    while current_page < start_page:
+        current_items = extract_ranked_names(page)
+        has_next = goto_next_page(page, previous_first_rank=current_items[0].rank)
+        if not has_next:
+            raise RuntimeError(
+                f"无法跳转到第 {start_page} 页：分页在第 {current_page} 页提前结束。"
+            )
+        page.wait_for_timeout(1_500)
+        current_page = get_current_page_number(page)
+        print(f"[INFO] 已跳转到站点第 {current_page} 页")
+
+
 def save_to_excel(items: list[AttractionItem], output_path: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -123,9 +173,18 @@ def save_to_excel(items: list[AttractionItem], output_path: Path) -> None:
     workbook.save(output_path)
 
 
-def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: bool) -> None:
+def run_scraper(
+    url: str,
+    pages: int,
+    start_page: int,
+    output: Path,
+    video_output: Path,
+    headed: bool,
+) -> None:
     if pages <= 0:
         raise ValueError("pages 必须大于 0。")
+    if start_page <= 0:
+        raise ValueError("start_page 必须大于 0。")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     video_output.parent.mkdir(parents=True, exist_ok=True)
@@ -150,13 +209,17 @@ def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: 
             page = context.new_page()
             page_video = page.video
             page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+            page.wait_for_timeout(2_500)
+            jump_to_start_page(page, start_page=start_page)
 
             for page_index in range(1, pages + 1):
                 page.wait_for_timeout(2_500)
                 current_items = extract_ranked_names(page)
                 all_items.extend(current_items)
+                site_page_number = get_current_page_number(page)
                 print(
-                    f"[INFO] 第 {page_index} 页抓取完成：{len(current_items)} 条（首条编号 {current_items[0].rank}）"
+                    f"[INFO] 进度 {page_index}/{pages}：站点第 {site_page_number} 页抓取完成，"
+                    f"{len(current_items)} 条（首条编号 {current_items[0].rank}）"
                 )
 
                 if page_index == pages:
@@ -187,6 +250,7 @@ def main() -> None:
     run_scraper(
         url=args.url,
         pages=args.pages,
+        start_page=args.start_page,
         output=Path(args.output),
         video_output=Path(args.video),
         headed=args.headed,
