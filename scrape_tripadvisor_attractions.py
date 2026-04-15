@@ -50,18 +50,17 @@ def extract_ranked_names(page: Page) -> list[AttractionItem]:
         """
         () => {
           const anchors = Array.from(document.querySelectorAll("a"));
-          const visibleRankAnchors = anchors
+          const rankAnchors = anchors
             .map((anchor) => {
               const text = (anchor.textContent || "").replace(/\\s+/g, " ").trim();
-              const isVisible = !!(
-                anchor.offsetWidth ||
-                anchor.offsetHeight ||
-                anchor.getClientRects().length
-              );
-              return { text, isVisible };
+              return { text };
             })
-            .filter((row) => row.isVisible && /^\\d+\\./.test(row.text));
-          return visibleRankAnchors.map((row) => row.text);
+            .filter(
+              (row) =>
+                /^\\d+\\./.test(row.text) &&
+                !/条中国景点点评$/.test(row.text)
+            );
+          return rankAnchors.map((row) => row.text);
         }
         """
     )
@@ -135,6 +134,7 @@ def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: 
 
     all_items: list[AttractionItem] = []
     page = None
+    page_video = None
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
@@ -148,6 +148,7 @@ def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: 
 
         try:
             page = context.new_page()
+            page_video = page.video
             page.goto(url, wait_until="domcontentloaded", timeout=120_000)
 
             for page_index in range(1, pages + 1):
@@ -169,17 +170,16 @@ def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: 
             save_to_excel(all_items, output)
             print(f"[INFO] Excel 已保存: {output}")
         finally:
+            if page is not None:
+                page.close()
+            if page_video is not None:
+                if video_output.exists():
+                    video_output.unlink()
+                page_video.save_as(str(video_output))
+                print(f"[INFO] 录屏已保存: {video_output}")
             context.close()
             browser.close()
-
-    if page is not None and page.video is not None:
-        recorded_video_path = Path(page.video.path())
-        if recorded_video_path.exists():
-            if video_output.exists():
-                video_output.unlink()
-            shutil.move(str(recorded_video_path), str(video_output))
-            print(f"[INFO] 录屏已保存: {video_output}")
-    shutil.rmtree(temp_video_dir, ignore_errors=True)
+            shutil.rmtree(temp_video_dir, ignore_errors=True)
 
 
 def main() -> None:
