@@ -4,6 +4,8 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +65,47 @@ def persist_latest_outputs(record_path: Path, excel_path: Path, video_path: Path
     record_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def trim_video_from_offset(
+    source_video: Path, target_video: Path, start_offset_seconds: float
+) -> bool:
+    ffmpeg_binary = shutil.which("ffmpeg")
+    if ffmpeg_binary is None:
+        print("[WARN] 未找到 ffmpeg，录屏将保留完整流程。")
+        return False
+
+    if target_video.exists():
+        target_video.unlink()
+
+    # Re-encode to avoid keyframe boundary issues when trimming.
+    command = [
+        ffmpeg_binary,
+        "-y",
+        "-ss",
+        f"{max(0.0, start_offset_seconds):.3f}",
+        "-i",
+        str(source_video),
+        "-c:v",
+        "libvpx-vp9",
+        "-b:v",
+        "0",
+        "-crf",
+        "32",
+        "-an",
+        str(target_video),
+    ]
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return False
+
+    return target_video.exists()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -246,6 +289,8 @@ def run_scraper(
     page_video = None
     excel_saved = False
     video_saved = False
+    video_capture_start_seconds = 0.0
+    recording_started_at = 0.0
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
@@ -260,9 +305,13 @@ def run_scraper(
         try:
             page = context.new_page()
             page_video = page.video
+            recording_started_at = time.monotonic()
             page.goto(url, wait_until="domcontentloaded", timeout=120_000)
             page.wait_for_timeout(2_500)
             jump_to_start_page(page, start_page=start_page)
+            video_capture_start_seconds = max(
+                0.0, time.monotonic() - recording_started_at
+            )
 
             for page_index in range(1, pages + 1):
                 page.wait_for_timeout(2_500)
@@ -289,10 +338,27 @@ def run_scraper(
             if page is not None:
                 page.close()
             if page_video is not None:
-                if video_output.exists():
-                    video_output.unlink()
-                page_video.save_as(str(video_output))
-                print(f"[INFO] 录屏已保存: {video_output}")
+                raw_video_output = temp_video_dir / "raw_capture.webm"
+                if raw_video_output.exists():
+                    raw_video_output.unlink()
+                page_video.save_as(str(raw_video_output))
+
+                if (
+                    video_capture_start_seconds > 0.2
+                    and trim_video_from_offset(
+                        source_video=raw_video_output,
+                        target_video=video_output,
+                        start_offset_seconds=video_capture_start_seconds,
+                    )
+                ):
+                    print(
+                        f"[INFO] 录屏已保存: {video_output}（从起始页开始，已裁剪前置跳页）"
+                    )
+                else:
+                    if video_output.exists():
+                        video_output.unlink()
+                    shutil.move(str(raw_video_output), str(video_output))
+                    print(f"[INFO] 录屏已保存: {video_output}")
                 video_saved = True
             context.close()
             browser.close()
