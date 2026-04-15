@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from openpyxl import Workbook
+from playwright.sync_api import Page, TimeoutError, sync_playwright
+
+DEFAULT_URL = "https://www.tripadvisor.cn/Attractions-g294211-Activities-China.html"
+RANK_NAME_PATTERN = re.compile(r"^(\d+)\.(.+)$")
+
+
+@dataclass(frozen=True)
+class AttractionItem:
+    rank: int
+    name: str
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="抓取 TripAdvisor 中国景点列表并导出 Excel。"
+    )
+    parser.add_argument("--url", default=DEFAULT_URL, help="景点列表起始 URL。")
+    parser.add_argument(
+        "--pages", type=int, default=10, help="抓取页数（默认 10）。"
+    )
+    parser.add_argument(
+        "--output",
+        default="attractionsForAgent.xlsx",
+        help="Excel 输出文件路径。",
+    )
+    parser.add_argument(
+        "--video",
+        default="attractionsForAgent.webm",
+        help="录屏输出文件路径。",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="是否启用有头浏览器（默认无头）。",
+    )
+    return parser.parse_args()
+
+
+def extract_ranked_names(page: Page) -> list[AttractionItem]:
+    raw_items = page.evaluate(
+        """
+        () => {
+          const anchors = Array.from(document.querySelectorAll("a"));
+          const visibleRankAnchors = anchors
+            .map((anchor) => {
+              const text = (anchor.textContent || "").replace(/\\s+/g, " ").trim();
+              const isVisible = !!(
+                anchor.offsetWidth ||
+                anchor.offsetHeight ||
+                anchor.getClientRects().length
+              );
+              return { text, isVisible };
+            })
+            .filter((row) => row.isVisible && /^\\d+\\./.test(row.text));
+          return visibleRankAnchors.map((row) => row.text);
+        }
+        """
+    )
+    items: list[AttractionItem] = []
+    for raw_item in raw_items:
+        match = RANK_NAME_PATTERN.match(raw_item)
+        if not match:
+            continue
+        rank = int(match.group(1))
+        name = match.group(2).strip()
+        if name:
+            items.append(AttractionItem(rank=rank, name=name))
+    if not items:
+        raise RuntimeError("当前页面未提取到景点数据，请检查页面结构。")
+    return items
+
+
+def goto_next_page(page: Page, previous_first_rank: int) -> bool:
+    next_button = page.locator("a[aria-label='Next page']")
+    if next_button.count() == 0:
+        return False
+
+    next_button.first.click()
+    try:
+        page.wait_for_function(
+            """
+            (oldRank) => {
+              const firstRankAnchor = Array.from(document.querySelectorAll("a"))
+                .map((anchor) => {
+                  const text = (anchor.textContent || "").replace(/\\s+/g, " ").trim();
+                  const isVisible = !!(
+                    anchor.offsetWidth ||
+                    anchor.offsetHeight ||
+                    anchor.getClientRects().length
+                  );
+                  return { text, isVisible };
+                })
+                .find((row) => row.isVisible && /^\\d+\\./.test(row.text));
+
+              if (!firstRankAnchor) return false;
+              const currentRank = Number(firstRankAnchor.text.split(".")[0]);
+              return currentRank !== oldRank;
+            }
+            """,
+            arg=previous_first_rank,
+            timeout=60_000,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError("分页后数据未刷新，无法继续抓取下一页。") from exc
+    return True
+
+
+def save_to_excel(items: list[AttractionItem], output_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "景点"
+    sheet.append(["编号", "景点名称"])
+    for item in items:
+        sheet.append([item.rank, item.name])
+    workbook.save(output_path)
+
+
+def run_scraper(url: str, pages: int, output: Path, video_output: Path, headed: bool) -> None:
+    if pages <= 0:
+        raise ValueError("pages 必须大于 0。")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    video_output.parent.mkdir(parents=True, exist_ok=True)
+    temp_video_dir = video_output.parent / ".playwright-video-tmp"
+    temp_video_dir.mkdir(parents=True, exist_ok=True)
+
+    all_items: list[AttractionItem] = []
+    page = None
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=not headed)
+        context = browser.new_context(
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1440, "height": 900},
+            record_video_dir=str(temp_video_dir),
+            record_video_size={"width": 1280, "height": 720},
+        )
+
+        try:
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+
+            for page_index in range(1, pages + 1):
+                page.wait_for_timeout(2_500)
+                current_items = extract_ranked_names(page)
+                all_items.extend(current_items)
+                print(
+                    f"[INFO] 第 {page_index} 页抓取完成：{len(current_items)} 条（首条编号 {current_items[0].rank}）"
+                )
+
+                if page_index == pages:
+                    break
+
+                has_next = goto_next_page(page, previous_first_rank=current_items[0].rank)
+                if not has_next:
+                    print("[WARN] 未找到下一页按钮，提前结束抓取。")
+                    break
+
+            save_to_excel(all_items, output)
+            print(f"[INFO] Excel 已保存: {output}")
+        finally:
+            context.close()
+            browser.close()
+
+    if page is not None and page.video is not None:
+        recorded_video_path = Path(page.video.path())
+        if recorded_video_path.exists():
+            if video_output.exists():
+                video_output.unlink()
+            shutil.move(str(recorded_video_path), str(video_output))
+            print(f"[INFO] 录屏已保存: {video_output}")
+    shutil.rmtree(temp_video_dir, ignore_errors=True)
+
+
+def main() -> None:
+    args = parse_arguments()
+    run_scraper(
+        url=args.url,
+        pages=args.pages,
+        output=Path(args.output),
+        video_output=Path(args.video),
+        headed=args.headed,
+    )
+
+
+if __name__ == "__main__":
+    main()
