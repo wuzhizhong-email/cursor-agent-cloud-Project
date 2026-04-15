@@ -1,1 +1,3 @@
 .tripadvisor_latest_outputs.json
+__pycache__/
+*.py[cod]

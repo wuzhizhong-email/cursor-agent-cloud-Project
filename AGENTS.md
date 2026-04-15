@@ -17,6 +17,10 @@ The script supports configurable start page and page count.
 - `scrape_tripadvisor_attractions.py`: main scraper and CLI entrypoint
 - `requirements.txt`: Python dependencies
 - `README.md`: user-facing usage notes
+- `tests/test_scrape_tripadvisor_attractions.py`: offline unit tests
+- `scripts/setup_env.sh`: one-command environment bootstrap
+- `scripts/run_tests.sh`: unified test entrypoint
+- `ONBOARD_PROMPT.md`: prompt template for cursor.com/onboard
 - `.tripadvisor_latest_outputs.json`: runtime state used to clean up previous outputs
 
 ## Environment Setup
@@ -29,6 +33,12 @@ python3 -m playwright install chromium
 ```
 
 Optional for better video trimming: install `ffmpeg` (if unavailable, script still works and keeps full recording).
+
+Preferred one-command setup:
+
+```bash
+./scripts/setup_env.sh
+```
 
 ## Run Commands
 
@@ -75,19 +85,34 @@ When modifying scraper logic, preserve these behaviors unless explicitly request
 5. **Video handling**
    - Keep fallback path when `ffmpeg` is missing or trimming fails.
 
-## Lightweight Validation
+## Test Workflow (How to test)
 
-For non-network checks after code edits:
+Use the repository test entrypoint:
 
 ```bash
-python3 -m py_compile scrape_tripadvisor_attractions.py
+./scripts/run_tests.sh
 ```
 
-For functional checks (network/browser required), run with a small page count first:
+This covers:
+
+1. `python3 -m py_compile scrape_tripadvisor_attractions.py` (syntax/import sanity)
+2. `python3 -m unittest discover -s tests -p "test_*.py"` (offline unit tests)
+
+Optional smoke test (network + browser required):
+
+```bash
+./scripts/run_tests.sh --with-smoke
+```
+
+Equivalent smoke command:
 
 ```bash
 python3 scrape_tripadvisor_attractions.py --pages 1 --start-page 1
 ```
+
+## Onboard Setup Guidance
+
+To make future cloud-agent runs reproducible, copy the prompt in `ONBOARD_PROMPT.md` into [cursor.com/onboard](https://cursor.com/onboard). It asks onboarding to preinstall dependencies and validates that `./scripts/run_tests.sh` passes.
 
 ## Notes for Future Agents
 
