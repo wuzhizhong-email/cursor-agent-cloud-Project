@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 from dataclasses import dataclass
@@ -11,12 +12,57 @@ from playwright.sync_api import Page, TimeoutError, sync_playwright
 
 DEFAULT_URL = "https://www.tripadvisor.cn/Attractions-g294211-Activities-China.html"
 RANK_NAME_PATTERN = re.compile(r"^(\d+)\.(.+)$")
+LATEST_OUTPUT_RECORD = Path(__file__).resolve().parent / ".tripadvisor_latest_outputs.json"
 
 
 @dataclass(frozen=True)
 class AttractionItem:
     rank: int
     name: str
+
+
+def load_previous_outputs(record_path: Path) -> tuple[Path | None, Path | None]:
+    if not record_path.exists():
+        return None, None
+
+    try:
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+
+    excel_raw = payload.get("excel")
+    video_raw = payload.get("video")
+    excel_path = Path(excel_raw).expanduser() if isinstance(excel_raw, str) else None
+    video_path = Path(video_raw).expanduser() if isinstance(video_raw, str) else None
+    return excel_path, video_path
+
+
+def remove_previous_outputs(
+    previous_excel: Path | None,
+    previous_video: Path | None,
+    current_excel: Path,
+    current_video: Path,
+) -> None:
+    current_paths = {current_excel.resolve(), current_video.resolve()}
+    for previous_path in (previous_excel, previous_video):
+        if previous_path is None:
+            continue
+        resolved_previous = previous_path.resolve()
+        if resolved_previous in current_paths:
+            continue
+        if previous_path.exists():
+            previous_path.unlink()
+            print(f"[INFO] 已删除旧输出: {previous_path}")
+
+
+def persist_latest_outputs(record_path: Path, excel_path: Path, video_path: Path) -> None:
+    payload = {
+        "excel": str(excel_path.resolve()),
+        "video": str(video_path.resolve()),
+    }
+    record_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -186,6 +232,10 @@ def run_scraper(
     if start_page <= 0:
         raise ValueError("start_page 必须大于 0。")
 
+    output = output.resolve()
+    video_output = video_output.resolve()
+    previous_excel, previous_video = load_previous_outputs(LATEST_OUTPUT_RECORD)
+
     output.parent.mkdir(parents=True, exist_ok=True)
     video_output.parent.mkdir(parents=True, exist_ok=True)
     temp_video_dir = video_output.parent / ".playwright-video-tmp"
@@ -194,6 +244,8 @@ def run_scraper(
     all_items: list[AttractionItem] = []
     page = None
     page_video = None
+    excel_saved = False
+    video_saved = False
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed)
@@ -232,6 +284,7 @@ def run_scraper(
 
             save_to_excel(all_items, output)
             print(f"[INFO] Excel 已保存: {output}")
+            excel_saved = True
         finally:
             if page is not None:
                 page.close()
@@ -240,9 +293,23 @@ def run_scraper(
                     video_output.unlink()
                 page_video.save_as(str(video_output))
                 print(f"[INFO] 录屏已保存: {video_output}")
+                video_saved = True
             context.close()
             browser.close()
             shutil.rmtree(temp_video_dir, ignore_errors=True)
+
+    if excel_saved and video_saved:
+        remove_previous_outputs(
+            previous_excel=previous_excel,
+            previous_video=previous_video,
+            current_excel=output,
+            current_video=video_output,
+        )
+        persist_latest_outputs(
+            record_path=LATEST_OUTPUT_RECORD,
+            excel_path=output,
+            video_path=video_output,
+        )
 
 
 def main() -> None:
