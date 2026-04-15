@@ -4,14 +4,11 @@
 
 ## 功能
 
-- 从起始页 `https://www.tripadvisor.cn/Attractions-g294211-Activities-China.html` 开始抓取
-- 支持指定起始页码，从任意页开始抓取后续数据
-- 通过底部分页控件进入下一页
-- 默认抓取 10 页（可配置）
-- 录制视频会从指定起始页开始（自动裁剪跳转到起始页前的片段）
-- 每次成功运行后自动删除上一次生成的 Excel/视频，仅保留最新一组产物
-- 导出 `编号`、`景点名称` 到 `attractionsForAgent.xlsx`
-- 自动录制抓取过程视频（默认 `attractionsForAgent.webm`）
+- 示例：生成一个新项目，支持打开浏览器获取景点存到excel
+- 目标 URL：https://www.tripadvisor.cn/Attractions-g294211-Activities-China.html及后续页面，每个页面都是通过底部分页按钮进入下一页，直到抓取10个页面后结束，其中初始页面的页码和抓取页面的数量是可以配置的
+- 分析页面并按顺序从列表页面的景点卡片中获取编号、景点名称信息
+- 输出：仓库里一个 attractionsForAgent.xlsx 存储编号和名称，录制获取数据的视频
+- 用法：python3 scrape_tripadvisor_attractions.py --start-page 6 --pages 5 --output attractionsFromPage.xlsx --video attractionsFromPage.webm
 
 ## 环境准备
 
